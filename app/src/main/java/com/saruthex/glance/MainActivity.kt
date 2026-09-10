@@ -72,7 +72,7 @@ class Store(c:Context){
     val c=LocalContext.current;val store=remember{Store(c)};var profile by remember{mutableStateOf(store.load())};var tab by remember{mutableIntStateOf(0)}
     MaterialTheme(colorScheme=darkColorScheme(primary=ACCENT,background=BG,surface=PANEL)){
         Scaffold(containerColor=BG,bottomBar={NavigationBar(containerColor=PANEL){
-            listOf("Glance","Enroll","Faces","Settings").forEachIndexed{i,n->NavigationBarItem(tab==i,{tab=i},{Text(if(tab==i)"●"else"○")},{Text(n)})}
+            listOf("Glance","Enroll","Faces","Settings").forEachIndexed{i,n->NavigationBarItem(selected=tab==i,onClick={tab=i},icon={Text(if(tab==i)"●"else"○")},label={Text(n)})}
         }}){pad->Box(Modifier.fillMaxSize().padding(pad)){when(tab){
             0->Scan(granted,profile)
             1->Enroll(granted,profile?.name){store.save(it);profile=it;tab=2}
@@ -115,7 +115,7 @@ class Store(c:Context){
 @Composable fun Faces(profile:Profile?,del:()->Unit){
     var confirm by remember{mutableStateOf(false)};Column(Modifier.fillMaxSize().padding(24.dp)){Spacer(Modifier.height(20.dp));Text("Saved identities",style=MaterialTheme.typography.headlineSmall,fontWeight=FontWeight.Bold);Spacer(Modifier.height(20.dp))
         if(profile==null)Text("No profile enrolled yet.",color=Color.LightGray)else{Text(profile.name,style=MaterialTheme.typography.titleLarge,fontWeight=FontWeight.Bold);Text(profile.samples.size.toString()+" enrollment samples stored locally",color=Color.LightGray);Spacer(Modifier.height(20.dp));OutlinedButton({confirm=true}){Text("Delete profile")}}}
-    if(confirm)AlertDialog({confirm=false},{Text("Delete profile?")},{Text("This removes local enrollment data.")},{TextButton({del();confirm=false}){Text("Delete")}},{TextButton({confirm=false}){Text("Cancel")}})
+    if(confirm)AlertDialog(onDismissRequest={confirm=false},title={Text("Delete profile?")},text={Text("This removes local enrollment data.")},confirmButton={TextButton(onClick={del();confirm=false}){Text("Delete")}},dismissButton={TextButton(onClick={confirm=false}){Text("Cancel")}})
 }
 
 @Composable fun Settings(has:Boolean,clear:()->Unit){
@@ -125,7 +125,7 @@ class Store(c:Context){
         Spacer(Modifier.height(20.dp));Text("Privacy",fontWeight=FontWeight.Bold);Text("Enrollment samples stay in the app's local storage in this build.",color=Color.LightGray);Spacer(Modifier.height(24.dp))
         if(has)OutlinedButton({confirm=true},modifier=Modifier.fillMaxWidth()){Text("Delete all local data")};Text("Version 1.0 • Galaxy S22",color=Color.Gray)
     }
-    if(confirm)AlertDialog({confirm=false},{Text("Delete all data?")},{Text("Your local profile will be removed.")},{TextButton({clear();confirm=false}){Text("Delete")}},{TextButton({confirm=false}){Text("Cancel")}})
+    if(confirm)AlertDialog(onDismissRequest={confirm=false},title={Text("Delete all data?")},text={Text("Your local profile will be removed.")},confirmButton={TextButton(onClick={clear();confirm=false}){Text("Delete")}},dismissButton={TextButton(onClick={confirm=false}){Text("Cancel")}})
 }
 
 @Composable fun Camera(mod:Modifier,onFaces:(List<Face>)->Unit){

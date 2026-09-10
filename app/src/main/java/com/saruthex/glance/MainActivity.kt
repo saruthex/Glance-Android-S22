@@ -1,18 +1,16 @@
 package com.saruthex.glance
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.camera.core.CameraSelector
-import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.Preview
+import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.*
@@ -28,148 +26,116 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.face.Face
-import com.google.mlkit.vision.face.FaceDetection
-import com.google.mlkit.vision.face.FaceDetectorOptions
+import com.google.mlkit.vision.face.*
+import org.json.JSONArray
+import org.json.JSONObject
+import kotlin.math.sqrt
 
-class MainActivity : ComponentActivity() {
-    private var cameraGranted by mutableStateOf(false)
-    private val permissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { cameraGranted = it }
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
-        cameraGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
-        if (!cameraGranted) permissionLauncher.launch(Manifest.permission.CAMERA)
-        setContent { GlanceApp(cameraGranted) }
+private val BG=Color(0xFF090B10)
+private val PANEL=Color(0xFF11161F)
+private val ACCENT=Color(0xFF8AB4FF)
+
+class MainActivity:ComponentActivity(){
+    private var granted by mutableStateOf(false)
+    private val ask=registerForActivityResult(ActivityResultContracts.RequestPermission()){granted=it}
+    override fun onCreate(s:Bundle?){super.onCreate(s);enableEdgeToEdge()
+        granted=ContextCompat.checkSelfPermission(this,Manifest.permission.CAMERA)==PackageManager.PERMISSION_GRANTED
+        if(!granted) ask.launch(Manifest.permission.CAMERA)
+        setContent{GlanceApp(granted)}
     }
 }
 
-@Composable
-fun GlanceApp(cameraGranted: Boolean) {
-    MaterialTheme(colorScheme = darkColorScheme(primary = Color(0xFF8AB4FF), surface = Color(0xFF10131A), background = Color(0xFF090B10))) {
-        var tab by remember { mutableIntStateOf(0) }
-        Scaffold(containerColor = Color(0xFF090B10), bottomBar = {
-            NavigationBar(containerColor = Color(0xFF10131A)) {
-                listOf("Glance", "Enroll", "Faces", "Settings").forEachIndexed { index, label ->
-                    NavigationBarItem(selected = tab == index, onClick = { tab = index },
-                        icon = { Text(if (tab == index) "◉" else "○") }, label = { Text(label) })
-                }
-            }
-        }) { padding ->
-            Box(Modifier.fillMaxSize().padding(padding)) {
-                when (tab) {
-                    0 -> HomeScreen(cameraGranted)
-                    1 -> EnrollmentScreen(cameraGranted)
-                    2 -> FacesScreen()
-                    else -> SettingsScreen()
-                }
-            }
+data class Sig(val v:List<Float>){
+    fun distance(o:Sig)=if(v.size!=o.v.size) 999f else sqrt(v.indices.sumOf{val d=(v[it]-o.v[it]).toDouble();d*d}).toFloat()/v.size
+    fun json()=JSONArray().also{a->v.forEach{a.put(it.toDouble())}}
+    companion object{
+        fun from(f:Face):Sig{
+            val b=f.boundingBox; val w=b.width().coerceAtLeast(1).toFloat();val h=b.height().coerceAtLeast(1).toFloat()
+            fun px(t:Int)=f.getLandmark(t)?.position?.x?.minus(b.left)?.div(w)?:.5f
+            fun py(t:Int)=f.getLandmark(t)?.position?.y?.minus(b.top)?.div(h)?:.5f
+            return Sig(listOf(w/h,f.headEulerAngleY/45f,f.headEulerAngleZ/45f,
+                px(FaceLandmark.LEFT_EYE),py(FaceLandmark.LEFT_EYE),px(FaceLandmark.RIGHT_EYE),py(FaceLandmark.RIGHT_EYE),
+                px(FaceLandmark.NOSE_BASE),py(FaceLandmark.NOSE_BASE),px(FaceLandmark.MOUTH_BOTTOM),py(FaceLandmark.MOUTH_BOTTOM)))
         }
+        fun parse(a:JSONArray)=Sig(List(a.length()){a.getDouble(it).toFloat()})
+    }
+}
+data class Profile(val name:String,val samples:List<Sig>)
+class Store(c:Context){
+    private val p=c.getSharedPreferences("glance",0)
+    fun load():Profile?=runCatching{val o=JSONObject(p.getString("profile",null)?:return null);val a=o.getJSONArray("s");Profile(o.getString("n"),List(a.length()){Sig.parse(a.getJSONArray(it))})}.getOrNull()
+    fun save(x:Profile){val a=JSONArray();x.samples.forEach{a.put(it.json())};p.edit().putString("profile",JSONObject().put("n",x.name).put("s",a).toString()).apply()}
+    fun clear(){p.edit().clear().apply()}
+}
+
+@Composable fun GlanceApp(granted:Boolean){
+    val c=LocalContext.current;val store=remember{Store(c)};var profile by remember{mutableStateOf(store.load())};var tab by remember{mutableIntStateOf(0)}
+    MaterialTheme(colorScheme=darkColorScheme(primary=ACCENT,background=BG,surface=PANEL)){
+        Scaffold(containerColor=BG,bottomBar={NavigationBar(containerColor=PANEL){
+            listOf("Glance","Enroll","Faces","Settings").forEachIndexed{i,n->NavigationBarItem(tab==i,{tab=i},{Text(if(tab==i)"●"else"○")},{Text(n)})}
+        }}){pad->Box(Modifier.fillMaxSize().padding(pad)){when(tab){
+            0->Scan(granted,profile)
+            1->Enroll(granted,profile?.name){store.save(it);profile=it;tab=2}
+            2->Faces(profile){store.clear();profile=null}
+            else->Settings(profile!=null){store.clear();profile=null}
+        }}}
     }
 }
 
-@Composable
-private fun HomeScreen(cameraGranted: Boolean) {
-    var scanning by remember { mutableStateOf(false) }
-    var faceCount by remember { mutableIntStateOf(0) }
-    Column(Modifier.fillMaxSize().padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Spacer(Modifier.height(28.dp))
-        Text("GLANCE", style = MaterialTheme.typography.labelLarge, color = Color(0xFF8AB4FF))
-        Text("Face recognition", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(28.dp))
-        if (scanning && cameraGranted) {
-            CameraFacePreview(Modifier.size(310.dp).clip(CircleShape)) { faceCount = it.size }
-        } else {
-            Surface(Modifier.size(310.dp), shape = CircleShape, color = Color(0xFF151922)) {
-                Box(contentAlignment = Alignment.Center) { Text(if (cameraGranted) "Ready to scan" else "Camera permission required") }
-            }
-        }
-        Spacer(Modifier.height(24.dp))
-        Text(when {
-            !cameraGranted -> "Allow camera access to continue."
-            !scanning -> "Tap Start recognition to use the front camera."
-            faceCount == 0 -> "Looking for a face…"
-            faceCount == 1 -> "Face detected • recognition model coming next"
-            else -> "$faceCount faces detected • use one face at a time"
-        }, color = Color.LightGray)
-        Spacer(Modifier.weight(1f))
-        Button(onClick = { scanning = !scanning }, enabled = cameraGranted, modifier = Modifier.fillMaxWidth().height(58.dp)) {
-            Text(if (scanning) "Stop camera" else "Start recognition")
-        }
-        Spacer(Modifier.height(20.dp))
+@Composable fun Scan(granted:Boolean,profile:Profile?){
+    var running by remember{mutableStateOf(false)};var faces by remember{mutableStateOf<List<Face>>(emptyList())}
+    var blink by remember{mutableStateOf(false)};var left by remember{mutableStateOf(false)};var right by remember{mutableStateOf(false)}
+    val face=faces.singleOrNull()
+    if(face!=null){if((face.leftEyeOpenProbability?:1f)<.35f&&(face.rightEyeOpenProbability?:1f)<.35f)blink=true;if(face.headEulerAngleY>15)left=true;if(face.headEulerAngleY< -15)right=true}
+    val d=if(face!=null&&profile!=null)profile.samples.minOfOrNull{it.distance(Sig.from(face))}else null
+    val ok=d!=null&&d<.09f&&blink&&left&&right
+    Column(Modifier.fillMaxSize().padding(24.dp),horizontalAlignment=Alignment.CenterHorizontally){
+        Spacer(Modifier.height(16.dp));Text("GLANCE",color=ACCENT,fontWeight=FontWeight.Bold);Text("Live face verification",style=MaterialTheme.typography.headlineSmall,fontWeight=FontWeight.Bold);Spacer(Modifier.height(20.dp))
+        if(running&&granted)Camera(Modifier.size(300.dp).clip(CircleShape)){faces=it}else Surface(Modifier.size(300.dp),shape=CircleShape,color=PANEL){Box(contentAlignment=Alignment.Center){Text(if(profile==null)"Enroll a profile first"else"Ready to scan")}}
+        Spacer(Modifier.height(18.dp))
+        val status=when{!granted->"Camera permission required";profile==null->"Open Enroll and create your profile";!running->"Tap Start verification";face==null->"Looking for one face…";faces.size>1->"Use one face only";ok->"✓ Verified as "+profile.name;!blink->"Liveness: blink once";!left->"Liveness: turn your head left";!right->"Liveness: turn your head right";d!=null&&d<.09f->"Face match found";else->"Face does not match profile"}
+        Text(status,color=if(ok)Color(0xFF78D9A5)else Color.LightGray)
+        Spacer(Modifier.weight(1f));Button({running=!running;if(running){blink=false;left=false;right=false}},enabled=granted&&profile!=null,modifier=Modifier.fillMaxWidth().height(56.dp)){Text(if(running)"Stop camera"else"Start verification")}
+        Spacer(Modifier.height(8.dp));Text("On-device prototype • not a replacement for Android biometrics",style=MaterialTheme.typography.labelSmall,color=Color.Gray)
     }
 }
 
-@Composable
-private fun EnrollmentScreen(cameraGranted: Boolean) {
-    var pose by remember { mutableIntStateOf(0) }
-    var faceDetected by remember { mutableStateOf(false) }
-    val poses = listOf("Look straight ahead", "Turn slightly left", "Turn slightly right", "Look up", "Look down")
-    Column(Modifier.fillMaxSize().padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Spacer(Modifier.height(20.dp))
-        Text("Enroll your face", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(8.dp))
-        Text("Step ${pose + 1} of ${poses.size}", color = Color(0xFF8AB4FF))
-        Spacer(Modifier.height(20.dp))
-        if (cameraGranted) CameraFacePreview(Modifier.size(300.dp).clip(CircleShape)) { faceDetected = it.isNotEmpty() }
-        else Text("Camera permission required")
-        Spacer(Modifier.height(24.dp))
-        Text(poses[pose], style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(8.dp))
-        Text(if (faceDetected) "Face detected ✓" else "Position your face inside the camera", color = Color.LightGray)
-        Spacer(Modifier.weight(1f))
-        Button(onClick = { if (faceDetected && pose < poses.lastIndex) pose++ },
-            enabled = faceDetected && pose < poses.lastIndex, modifier = Modifier.fillMaxWidth().height(56.dp)) {
-            Text(if (pose == poses.lastIndex) "Enrollment model coming next" else "Capture this pose")
-        }
-        Spacer(Modifier.height(20.dp))
+@Composable fun Enroll(granted:Boolean,old:String?,save:(Profile)->Unit){
+    var name by remember{mutableStateOf(old?:"")};var faces by remember{mutableStateOf<List<Face>>(emptyList())};var samples by remember{mutableStateOf<List<Sig>>(emptyList())}
+    Column(Modifier.fillMaxSize().padding(24.dp),horizontalAlignment=Alignment.CenterHorizontally){
+        Spacer(Modifier.height(16.dp));Text("Enroll your face",style=MaterialTheme.typography.headlineSmall,fontWeight=FontWeight.Bold);Text("Capture five natural positions.",color=Color.LightGray)
+        Spacer(Modifier.height(14.dp));OutlinedTextField(name,{name=it},label={Text("Profile name")},singleLine=true);Spacer(Modifier.height(16.dp))
+        if(granted)Camera(Modifier.size(260.dp).clip(CircleShape)){faces=it}else Text("Camera permission required")
+        Spacer(Modifier.height(14.dp));Text("Samples: "+samples.size+"/5",color=ACCENT);val face=faces.singleOrNull();Text(if(face==null)"Position one face in the frame"else"Face detected • capture when ready",color=Color.LightGray)
+        Spacer(Modifier.weight(1f));Button({if(face!=null&&samples.size<5)samples=samples+Sig.from(face)},enabled=face!=null&&samples.size<5&&name.isNotBlank(),modifier=Modifier.fillMaxWidth()){Text("Capture sample")}
+        Spacer(Modifier.height(8.dp));Button({save(Profile(name.trim(),samples))},enabled=samples.size>=5&&name.isNotBlank(),modifier=Modifier.fillMaxWidth()){Text("Save profile")}
     }
 }
 
-@Composable private fun FacesScreen() = CenterPage("Saved identities", "No identity has been enrolled yet. The next version will store encrypted face embeddings locally.")
-@Composable private fun SettingsScreen() = CenterPage("Settings", "Camera and detection are now active. Recognition, liveness and privacy controls are the next phase.")
-@Composable private fun CenterPage(title: String, subtitle: String) {
-    Column(Modifier.fillMaxSize().padding(28.dp), verticalArrangement = Arrangement.Center) {
-        Text(title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(12.dp)); Text(subtitle, color = Color.LightGray)
-    }
+@Composable fun Faces(profile:Profile?,del:()->Unit){
+    var confirm by remember{mutableStateOf(false)};Column(Modifier.fillMaxSize().padding(24.dp)){Spacer(Modifier.height(20.dp));Text("Saved identities",style=MaterialTheme.typography.headlineSmall,fontWeight=FontWeight.Bold);Spacer(Modifier.height(20.dp))
+        if(profile==null)Text("No profile enrolled yet.",color=Color.LightGray)else{Text(profile.name,style=MaterialTheme.typography.titleLarge,fontWeight=FontWeight.Bold);Text(profile.samples.size.toString()+" enrollment samples stored locally",color=Color.LightGray);Spacer(Modifier.height(20.dp));OutlinedButton({confirm=true}){Text("Delete profile")}}}
+    if(confirm)AlertDialog({confirm=false},{Text("Delete profile?")},{Text("This removes local enrollment data.")},{TextButton({del();confirm=false}){Text("Delete")}},{TextButton({confirm=false}){Text("Cancel")}})
 }
 
-@Composable
-private fun CameraFacePreview(modifier: Modifier = Modifier, onFacesChanged: (List<Face>) -> Unit) {
-    val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
-    val previewView = remember { PreviewView(context).apply { scaleType = PreviewView.ScaleType.FILL_CENTER } }
-    DisposableEffect(lifecycleOwner) {
-        val future = ProcessCameraProvider.getInstance(context)
-        val executor = ContextCompat.getMainExecutor(context)
-        future.addListener({
-            val provider = future.get()
-            val preview = Preview.Builder().build().also { it.surfaceProvider = previewView.surfaceProvider }
-            val detector = FaceDetection.getClient(FaceDetectorOptions.Builder()
-                .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
-                .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL)
-                .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
-                .enableTracking().build())
-            val analysis = ImageAnalysis.Builder().setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST).build()
-            analysis.setAnalyzer(executor) { proxy ->
-                val media = proxy.image
-                if (media == null) proxy.close() else {
-                    val image = InputImage.fromMediaImage(media, proxy.imageInfo.rotationDegrees)
-                    detector.process(image)
-                        .addOnSuccessListener { onFacesChanged(it) }
-                        .addOnFailureListener { onFacesChanged(emptyList()) }
-                        .addOnCompleteListener { proxy.close() }
-                }
-            }
-            try {
-                provider.unbindAll()
-                provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_FRONT_CAMERA, preview, analysis)
-            } catch (_: Exception) { onFacesChanged(emptyList()) }
-        }, executor)
-        onDispose {
-            try { ProcessCameraProvider.getInstance(context).get().unbindAll() } catch (_: Exception) {}
-        }
+@Composable fun Settings(has:Boolean,clear:()->Unit){
+    var live by remember{mutableStateOf(true)};var confirm by remember{mutableStateOf(false)}
+    Column(Modifier.fillMaxSize().padding(24.dp)){Spacer(Modifier.height(20.dp));Text("Settings",style=MaterialTheme.typography.headlineSmall,fontWeight=FontWeight.Bold);Spacer(Modifier.height(20.dp))
+        Row(verticalAlignment=Alignment.CenterVertically,modifier=Modifier.fillMaxWidth()){Column(Modifier.weight(1f)){Text("Liveness challenge");Text("Blink and turn your head",color=Color.LightGray)};Switch(live,{live=it})}
+        Spacer(Modifier.height(20.dp));Text("Privacy",fontWeight=FontWeight.Bold);Text("Enrollment samples stay in the app's local storage in this build.",color=Color.LightGray);Spacer(Modifier.height(24.dp))
+        if(has)OutlinedButton({confirm=true},modifier=Modifier.fillMaxWidth()){Text("Delete all local data")};Text("Version 1.0 • Galaxy S22",color=Color.Gray)
     }
-    AndroidView(factory = { previewView }, modifier = modifier.background(Color(0xFF151922)))
+    if(confirm)AlertDialog({confirm=false},{Text("Delete all data?")},{Text("Your local profile will be removed.")},{TextButton({clear();confirm=false}){Text("Delete")}},{TextButton({confirm=false}){Text("Cancel")}})
+}
+
+@Composable fun Camera(mod:Modifier,onFaces:(List<Face>)->Unit){
+    val c=LocalContext.current;val owner=LocalLifecycleOwner.current;val view=remember{PreviewView(c).apply{scaleType=PreviewView.ScaleType.FILL_CENTER}}
+    DisposableEffect(owner){val future=ProcessCameraProvider.getInstance(c);val ex=ContextCompat.getMainExecutor(c);future.addListener({
+        val provider=future.get();val preview=Preview.Builder().build().also{it.surfaceProvider=view.surfaceProvider}
+        val detector=FaceDetection.getClient(FaceDetectorOptions.Builder().setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE).setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL).setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL).build())
+        val analysis=ImageAnalysis.Builder().setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST).build()
+        analysis.setAnalyzer(ex){p->val image=p.image;if(image==null)p.close()else detector.process(InputImage.fromMediaImage(image,p.imageInfo.rotationDegrees)).addOnSuccessListener{onFaces(it)}.addOnFailureListener{onFaces(emptyList())}.addOnCompleteListener{p.close()}}
+        try{provider.unbindAll();provider.bindToLifecycle(owner,CameraSelector.DEFAULT_FRONT_CAMERA,preview,analysis)}catch(_:Exception){onFaces(emptyList())}
+    },ex);onDispose{try{ProcessCameraProvider.getInstance(c).get().unbindAll()}catch(_:Exception){}}}
+    AndroidView({view},modifier=mod)
 }
